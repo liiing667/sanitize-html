@@ -358,8 +358,10 @@ function sanitizeHtml(html, options, _recursing) {
             }
           }
           if (passedAllowedAttributesMapCheck) {
-            if (options.allowedSchemesAppliedToAttributes.indexOf(a) !== -1) {
-              if (naughtyHref(name, value)) {
+            if (options.allowedSchemesAppliedToAttributes.indexOf(a) !== -1 ||
+            has(options.allowedSchemesByTagAndAttribute, name) ||
+            has(options.allowedSchemesByTagAndAttribute, '*')) {
+              if (naughtyHref(name, a, value)) {
                 delete frame.attribs[a];
                 return;
               }
@@ -424,7 +426,7 @@ function sanitizeHtml(html, options, _recursing) {
               try {
                 let parsed = parseSrcset(value);
                 parsed.forEach(function(value) {
-                  if (naughtyHref('srcset', value.url)) {
+                  if (naughtyHref(name, 'srcset', value.url)) {
                     value.evil = true;
                   }
                 });
@@ -694,7 +696,32 @@ function sanitizeHtml(html, options, _recursing) {
     return s;
   }
 
-  function naughtyHref(name, href) {
+  // Resolve the list of permitted schemes for a specific tag/attribute
+  // combination. Per-attribute policies take precedence over the legacy
+  // tag-level and global policies. Returns null when no per-attribute
+  // policy applies, so the legacy resolution order is preserved.
+  function getAttributeSchemes(name, attribute) {
+    const byTag = options.allowedSchemesByTagAndAttribute;
+    if (has(byTag, name) && has(byTag[name], attribute)) {
+      return byTag[name][attribute];
+    }
+    if (has(byTag, '*') && has(byTag['*'], attribute)) {
+      return byTag['*'][attribute];
+    }
+    if (has(byTag, name) && has(byTag[name], '*')) {
+      return byTag[name]['*'];
+    }
+    if (has(byTag, '*') && has(byTag['*'], '*')) {
+      return byTag['*']['*'];
+    }
+    return null;
+  }
+
+  function naughtyHref(name, attribute, href) {
+    if (href === undefined) {
+      href = attribute;
+      attribute = null;
+    }
     // Browsers ignore character codes of 32 (space) and below in a surprising
     // number of situations. Start reading here:
     // https://www.owasp.org/index.php/XSS_Filter_Evasion_Cheat_Sheet#Embedded_tab
@@ -728,6 +755,13 @@ function sanitizeHtml(html, options, _recursing) {
       return false;
     }
     const scheme = matches[1].toLowerCase();
+
+    const attributeSchemes = attribute
+      ? getAttributeSchemes(name, attribute)
+      : null;
+    if (attributeSchemes !== null) {
+      return attributeSchemes.indexOf(scheme) === -1;
+    }
 
     if (has(options.allowedSchemesByTag, name)) {
       return options.allowedSchemesByTag[name].indexOf(scheme) === -1;
@@ -942,6 +976,10 @@ sanitizeHtml.defaults = {
   // URL schemes we permit
   allowedSchemes: [ 'http', 'https', 'ftp', 'mailto', 'tel' ],
   allowedSchemesByTag: {},
+  // Per-attribute URL schemes, taking precedence over `allowedSchemesByTag`
+  // and `allowedSchemes`. Keyed by tag name (or `*`) and then by attribute
+  // name (or `*`), e.g. { img: { src: [ 'https' ], poster: [ 'https', 'blob' ] } }
+  allowedSchemesByTagAndAttribute: {},
   allowedSchemesAppliedToAttributes: [ 'href', 'src', 'cite' ],
   allowProtocolRelative: true,
   enforceHtmlBoundary: false,

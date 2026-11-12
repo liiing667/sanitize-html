@@ -959,6 +959,345 @@ describe('sanitizeHtml', function() {
     );
   });
 
+  describe('allowedSchemesByTagAndAttribute', function() {
+    // Per-attribute policy matrix fixture: on `img` the `src` attribute
+    // must only accept https, while `poster` may additionally accept blob.
+    const matrixOptions = {
+      allowedTags: [ 'img', 'video' ],
+      allowedAttributes: {
+        img: [ 'src', 'srcset', 'poster' ],
+        video: [ 'src', 'poster' ]
+      },
+      allowedSchemes: [ 'http', 'https' ],
+      allowedSchemesByTagAndAttribute: {
+        img: {
+          src: [ 'https' ],
+          srcset: [ 'https' ],
+          poster: [ 'https', 'blob' ]
+        }
+      }
+    };
+
+    it('should allow schemes on a per-attribute basis instead of only per tag', function() {
+      assert.equal(
+        sanitizeHtml('<img src="https://example.com/a.png" />', matrixOptions),
+        '<img src="https://example.com/a.png" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="http://example.com/a.png" />', matrixOptions),
+        '<img />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="blob:https://example.com/uuid" />', matrixOptions),
+        '<img />'
+      );
+    });
+
+    it('should allow a different scheme set on another attribute of the same tag', function() {
+      assert.equal(
+        sanitizeHtml('<img poster="https://example.com/poster.png" />', matrixOptions),
+        '<img poster="https://example.com/poster.png" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img poster="blob:https://example.com/uuid" />', matrixOptions),
+        '<img poster="blob:https://example.com/uuid" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img poster="http://example.com/poster.png" />', matrixOptions),
+        '<img />'
+      );
+    });
+
+    it('should apply the same policy to every candidate in a srcset attribute', function() {
+      assert.equal(
+        sanitizeHtml(
+          '<img srcset="https://example.com/a.png 1x, https://example.com/b.png 2x" />',
+          matrixOptions
+        ),
+        '<img srcset="https://example.com/a.png 1x, https://example.com/b.png 2x" />'
+      );
+      assert.equal(
+        sanitizeHtml(
+          '<img srcset="https://example.com/a.png 1x, http://example.com/b.png 2x" />',
+          matrixOptions
+        ),
+        '<img srcset="https://example.com/a.png 1x" />'
+      );
+      assert.equal(
+        sanitizeHtml(
+          '<img srcset="http://example.com/a.png 1x, blob:https://example.com/uuid 2x" />',
+          matrixOptions
+        ),
+        '<img />'
+      );
+    });
+
+    it('should treat an empty per-attribute scheme list as denying every scheme', function() {
+      const options = {
+        allowedTags: [ 'img' ],
+        allowedAttributes: { img: [ 'src' ] },
+        allowedSchemes: [ 'https' ],
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            src: []
+          }
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<img src="https://example.com/a.png" />', options),
+        '<img />'
+      );
+    });
+
+    it('should fall back to global tag wildcard attribute policies', function() {
+      const options = {
+        allowedTags: [ 'img', 'video' ],
+        allowedAttributes: {
+          img: [ 'src' ],
+          video: [ 'src' ]
+        },
+        allowedSchemes: [ 'http', 'https' ],
+        allowedSchemesByTagAndAttribute: {
+          '*': {
+            src: [ 'https' ]
+          }
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<img src="https://example.com/a.png" /><video src="https://example.com/v.mp4"></video>', options),
+        '<img src="https://example.com/a.png" /><video src="https://example.com/v.mp4"></video>'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="http://example.com/a.png" /><video src="http://example.com/v.mp4"></video>', options),
+        '<img /><video></video>'
+      );
+    });
+
+    it('should fall back to attribute wildcard policies within a tag', function() {
+      const options = {
+        allowedTags: [ 'img' ],
+        allowedAttributes: { img: [ 'src', 'poster' ] },
+        allowedSchemes: [ 'http', 'https' ],
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            '*': [ 'https' ],
+            poster: [ 'https', 'blob' ]
+          }
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<img src="https://example.com/a.png" />', options),
+        '<img src="https://example.com/a.png" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="http://example.com/a.png" />', options),
+        '<img />'
+      );
+      assert.equal(
+        sanitizeHtml('<img poster="blob:https://example.com/uuid" />', options),
+        '<img poster="blob:https://example.com/uuid" />'
+      );
+    });
+
+    it('should preserve the legacy allowedSchemesByTag behavior when no attribute policy matches', function() {
+      const options = {
+        allowedTags: [ 'img', 'a' ],
+        allowedAttributes: {
+          img: [ 'src' ],
+          a: [ 'href' ]
+        },
+        allowedSchemes: [ 'http' ],
+        allowedSchemesByTag: {
+          img: [ 'data' ],
+          a: [ 'https' ]
+        },
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            poster: [ 'blob' ]
+          }
+        }
+      };
+      const dataGif = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+      assert.equal(
+        sanitizeHtml(`<img src="${dataGif}" /><a href="https://www.example.com"></a>`, options),
+        `<img src="${dataGif}" /><a href="https://www.example.com"></a>`
+      );
+      assert.equal(
+        sanitizeHtml('<img src="https://www.example.com/a.png" />', options),
+        '<img />'
+      );
+    });
+
+    it('should take precedence over allowedSchemesByTag and allowedSchemes', function() {
+      const options = {
+        allowedTags: [ 'img' ],
+        allowedAttributes: { img: [ 'src' ] },
+        allowedSchemes: [ 'http', 'https', 'data' ],
+        allowedSchemesByTag: {
+          img: [ 'http', 'https', 'data' ]
+        },
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            src: [ 'https' ]
+          }
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<img src="https://example.com/a.png" />', options),
+        '<img src="https://example.com/a.png" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="http://example.com/a.png" />', options),
+        '<img />'
+      );
+      const dataGif = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
+      assert.equal(
+        sanitizeHtml(`<img src="${dataGif}" />`, options),
+        '<img />'
+      );
+    });
+
+    it('should still honor allowProtocolRelative for per-attribute policies', function() {
+      const options = {
+        allowedTags: [ 'img' ],
+        allowedAttributes: { img: [ 'src', 'srcset' ] },
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            src: [ 'https' ],
+            srcset: [ 'https' ]
+          }
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<img src="//example.com/a.png" />', options),
+        '<img src="//example.com/a.png" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="//example.com/a.png" />', Object.assign({}, options, {
+          allowProtocolRelative: false
+        })),
+        '<img />'
+      );
+      assert.equal(
+        sanitizeHtml('<img srcset="//example.com/a.png 1x" />', options),
+        '<img srcset="//example.com/a.png 1x" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img srcset="//example.com/a.png 1x" />', Object.assign({}, options, {
+          allowProtocolRelative: false
+        })),
+        '<img />'
+      );
+    });
+
+    it('should not be bypassed by entity-encoded or obfuscated schemes', function() {
+      const options = {
+        allowedTags: [ 'img' ],
+        allowedAttributes: { img: [ 'src', 'poster' ] },
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            src: [ 'https' ],
+            poster: [ 'https', 'blob' ]
+          }
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<img src="j&#97;v&#97;script:alert(1)" />', options),
+        '<img />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="  HTTPS://example.com/a.png" />', options),
+        '<img src="  HTTPS://example.com/a.png" />'
+      );
+      assert.equal(
+        sanitizeHtml('<img src="java<!-- -->script:alert(1)" />', options),
+        '<img />'
+      );
+      assert.equal(
+        sanitizeHtml('<img poster="j&#97;vascript:alert(1)" />', options),
+        '<img />'
+      );
+    });
+
+    it('should not be bypassed by attributes produced through transformTags', function() {
+      const options = {
+        allowedTags: [ 'img' ],
+        allowedAttributes: { img: [ 'src', 'poster' ] },
+        allowedSchemesByTagAndAttribute: {
+          img: {
+            src: [ 'https' ],
+            poster: [ 'https', 'blob' ]
+          }
+        },
+        transformTags: {
+          'x-img': sanitizeHtml.simpleTransform('img', {
+            src: 'javascript:alert(1)'
+          })
+        }
+      };
+      assert.equal(
+        sanitizeHtml('<x-img src="https://example.com/a.png"></x-img>', options),
+        '<img />'
+      );
+    });
+
+    it('should keep iframe and script hostname restrictions alongside attribute policies', function() {
+      assert.equal(
+        sanitizeHtml('<iframe src="https://evil.example.com/embed"></iframe>', {
+          allowedTags: [ 'iframe' ],
+          allowedAttributes: { iframe: [ 'src' ] },
+          allowedIframeHostnames: [ 'www.youtube.com' ],
+          allowedSchemesByTagAndAttribute: {
+            iframe: {
+              src: [ 'https' ]
+            }
+          }
+        }),
+        '<iframe></iframe>'
+      );
+      assert.equal(
+        sanitizeHtml('<iframe src="https://www.youtube.com/embed/x"></iframe>', {
+          allowedTags: [ 'iframe' ],
+          allowedAttributes: { iframe: [ 'src' ] },
+          allowedIframeHostnames: [ 'www.youtube.com' ],
+          allowedSchemesByTagAndAttribute: {
+            iframe: {
+              src: [ 'https' ]
+            }
+          }
+        }),
+        '<iframe src="https://www.youtube.com/embed/x"></iframe>'
+      );
+      assert.equal(
+        sanitizeHtml('<iframe src="http://www.youtube.com/embed/x"></iframe>', {
+          allowedTags: [ 'iframe' ],
+          allowedAttributes: { iframe: [ 'src' ] },
+          allowedIframeHostnames: [ 'www.youtube.com' ],
+          allowedSchemesByTagAndAttribute: {
+            iframe: {
+              src: [ 'https' ]
+            }
+          }
+        }),
+        '<iframe></iframe>'
+      );
+      assert.equal(
+        sanitizeHtml('<script src="https://evil.example.com/s.js"></script>', {
+          allowedTags: [ 'script' ],
+          allowVulnerableTags: true,
+          allowedAttributes: { script: [ 'src' ] },
+          allowedScriptHostnames: [ 'example.com' ],
+          allowedSchemesByTagAndAttribute: {
+            script: {
+              src: [ 'https' ]
+            }
+          }
+        }),
+        '<script></script>'
+      );
+    });
+  });
+
   it('text from transformTags should not specify tags', function() {
     const input = '<input value="&lt;script&gt;alert(1)&lt;/script&gt;">';
     const want = '<u class="inlined-input">&lt;script&gt;alert(1)&lt;/script&gt;</u>';
